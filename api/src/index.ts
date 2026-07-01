@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
 import { pool, initDB } from './db';
 import authRoutes from './routes/auth';
 import endpointRoutes from './routes/endpoints';
@@ -24,6 +25,13 @@ app.use('/api/ingest', ingestRoutes);
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Serve dashboard static files (catch-all for SPA routing)
+const dashboardPath = path.join(__dirname, '../../dashboard/dist');
+app.use(express.static(dashboardPath));
+app.use((_req, res) => {
+  res.sendFile(path.join(dashboardPath, 'index.html'));
 });
 
 // Init DB and start

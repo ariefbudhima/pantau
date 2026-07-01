@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const dotenv_1 = __importDefault(require("dotenv"));
+const path_1 = __importDefault(require("path"));
 const db_1 = require("./db");
 const auth_1 = __importDefault(require("./routes/auth"));
 const endpoints_1 = __importDefault(require("./routes/endpoints"));
@@ -24,6 +25,12 @@ app.use('/api/ingest', ingest_1.default);
 // Health check
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+// Serve dashboard static files (catch-all for SPA routing)
+const dashboardPath = path_1.default.join(__dirname, '../../dashboard/dist');
+app.use(express_1.default.static(dashboardPath));
+app.use((_req, res) => {
+    res.sendFile(path_1.default.join(dashboardPath, 'index.html'));
 });
 // Init DB and start
 async function start() {
