@@ -1,12 +1,10 @@
 import { Router, Response } from 'express';
 import { pool } from '../db';
-import { AuthRequest, authMiddleware } from '../middleware/auth';
-import crypto from 'crypto';
 
 const router = Router();
 
 // POST /api/ingest — SDK sends heartbeat data here
-router.post('/', async (req: AuthRequest, res: Response) => {
+router.post('/', async (req, res: Response) => {
   try {
     const apiKey = req.headers['x-api-key'] as string;
 
@@ -42,50 +40,29 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     );
     const projectId = projectResult.rows[0].id;
 
-    // Upsert endpoints
+    // Upsert endpoints with proper ON CONFLICT
     const now = new Date().toISOString();
     const upserted: any[] = [];
 
     for (const ep of endpoints) {
       const { method, path, statusCode, responseTimeMs, errorMessage } = ep;
 
-      if (!method || !path) {
-        continue;
-      }
+      if (!method || !path) continue;
 
+      const newStatus = (statusCode >= 200 && statusCode < 400) ? 'up' : 'down';
+      const name = `${method} ${path}`;
+
+      // Single upsert — INSERT or UPDATE on conflict
       const epResult = await pool.query(
         `INSERT INTO endpoints (project_id, name, method, path, type, status, last_checked_at)
          VALUES ($1, $2, $3, $4, 'auto', $5, $6)
-         ON CONFLICT DO NOTHING
-         RETURNING id, status`,
-        [projectId, `${method} ${path}`, method, path,
-         statusCode >= 200 && statusCode < 400 ? 'up' : 'down',
-         now]
+         ON CONFLICT (project_id, method, path)
+         DO UPDATE SET name = $2, status = $5, last_checked_at = $6
+         RETURNING id`,
+        [projectId, name, method, path, newStatus, now]
       );
 
-      let endpointId: number;
-      let currentStatus: string;
-
-      if (epResult.rows.length > 0) {
-        endpointId = epResult.rows[0].id;
-        currentStatus = epResult.rows[0].status;
-      } else {
-        // Already exists — get id
-        const existing = await pool.query(
-          'SELECT id FROM endpoints WHERE project_id = $1 AND method = $2 AND path = $3',
-          [projectId, method, path]
-        );
-        if (existing.rows.length === 0) continue;
-        endpointId = existing.rows[0].id;
-        currentStatus = statusCode >= 200 && statusCode < 400 ? 'up' : 'down';
-      }
-
-      // Update endpoint status
-      const newStatus = statusCode >= 200 && statusCode < 400 ? 'up' : 'down';
-      await pool.query(
-        `UPDATE endpoints SET status = $1, last_checked_at = $2 WHERE id = $3`,
-        [newStatus, now, endpointId]
-      );
+      const endpointId = epResult.rows[0].id;
 
       // Record heartbeat
       await pool.query(

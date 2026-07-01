@@ -39,7 +39,8 @@ const schema = `
     url VARCHAR(500),                            -- for manual monitors
     status VARCHAR(10) DEFAULT 'unknown',        -- up | down | unknown
     last_checked_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(project_id, method, path)
   );
 
   CREATE TABLE IF NOT EXISTS heartbeats (
