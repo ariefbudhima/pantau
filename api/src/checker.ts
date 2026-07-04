@@ -4,18 +4,11 @@
  * so we only ping type='manual' rows here.
  * Run: npx tsx src/checker.ts  (long-running; loops every CHECK_INTERVAL_MS)
  */
-import { pool } from './db';
+import { and, eq, isNotNull } from 'drizzle-orm';
+import { db } from './db';
+import { endpoints, heartbeats } from './schema';
 import https from 'https';
 import http from 'http';
-
-interface Endpoint {
-  id: number;
-  method: string;
-  path: string;
-  type: string;
-  url: string;
-  status: string;
-}
 
 function ping(url: string): Promise<{ statusCode: number; responseTimeMs: number; error?: string }> {
   return new Promise((resolve) => {
@@ -45,39 +38,35 @@ function ping(url: string): Promise<{ statusCode: number; responseTimeMs: number
 async function checkAll(): Promise<void> {
   console.log(`[checker] Starting heartbeat check at ${new Date().toISOString()}`);
 
-  const result = await pool.query(
-    `SELECT e.id, e.method, e.path, e.type, e.url, e.status
-     FROM endpoints e
-     JOIN projects p ON e.project_id = p.id
-     WHERE e.type = 'manual' AND e.url IS NOT NULL`
-  );
+  const rows = await db
+    .select({
+      id: endpoints.id, method: endpoints.method, path: endpoints.path,
+      url: endpoints.url, status: endpoints.status,
+    })
+    .from(endpoints)
+    .where(and(eq(endpoints.type, 'manual'), isNotNull(endpoints.url)));
 
-  const endpoints: Endpoint[] = result.rows;
-
-  if (endpoints.length === 0) {
+  if (rows.length === 0) {
     console.log('[checker] No endpoints to check');
     return;
   }
 
-  const now = new Date().toISOString();
+  const now = new Date();
   let checked = 0;
 
-  for (const ep of endpoints) {
-    const pingResult = await ping(ep.url);
+  for (const ep of rows) {
+    const pingResult = await ping(ep.url!);
     const newStatus = pingResult.statusCode >= 200 && pingResult.statusCode < 400 ? 'up' : 'down';
 
-    // Update endpoint
-    await pool.query(
-      `UPDATE endpoints SET status = $1, last_checked_at = $2 WHERE id = $3`,
-      [newStatus, now, ep.id]
-    );
+    await db.update(endpoints)
+      .set({ status: newStatus, lastCheckedAt: now })
+      .where(eq(endpoints.id, ep.id));
 
-    // Record heartbeat
-    await pool.query(
-      `INSERT INTO heartbeats (endpoint_id, status_code, response_time_ms, status, error_message, checked_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [ep.id, pingResult.statusCode, pingResult.responseTimeMs, newStatus, pingResult.error || null, now]
-    );
+    await db.insert(heartbeats).values({
+      endpointId: ep.id, statusCode: pingResult.statusCode,
+      responseTimeMs: pingResult.responseTimeMs, status: newStatus,
+      errorMessage: pingResult.error || null, checkedAt: now,
+    });
 
     checked++;
     if (newStatus !== ep.status) {

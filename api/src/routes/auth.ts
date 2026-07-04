@@ -2,7 +2,9 @@ import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { pool } from '../db';
+import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { users } from '../schema';
 import { AuthRequest, authMiddleware, getJWTSecret } from '../middleware/auth';
 
 const router = Router();
@@ -24,22 +26,21 @@ router.post('/register', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
-    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
-    if (existing.rows.length > 0) {
+    const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
+    if (existing.length > 0) {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
     const apiKey = generateApiKey();
 
-    const result = await pool.query(
-      `INSERT INTO users (email, password_hash, name, api_key)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, email, name, api_key, tier, created_at`,
-      [email, passwordHash, name || null, apiKey]
-    );
-
-    const user = result.rows[0];
+    const [user] = await db
+      .insert(users)
+      .values({ email, passwordHash, name: name || null, apiKey })
+      .returning({
+        id: users.id, email: users.email, name: users.name,
+        api_key: users.apiKey, tier: users.tier, created_at: users.createdAt,
+      });
     const token = jwt.sign({ userId: user.id }, getJWTSecret(), { expiresIn: '7d' });
 
     return res.status(201).json({ user, token });
@@ -58,18 +59,19 @@ router.post('/login', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
-    const result = await pool.query(
-      'SELECT id, email, password_hash, name, api_key, tier FROM users WHERE email = $1',
-      [email]
-    );
+    const [user] = await db
+      .select({
+        id: users.id, email: users.email, password_hash: users.passwordHash,
+        name: users.name, api_key: users.apiKey, tier: users.tier,
+      })
+      .from(users)
+      .where(eq(users.email, email));
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const user = result.rows[0];
     const valid = await bcrypt.compare(password, user.password_hash);
-
     if (!valid) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -87,16 +89,19 @@ router.post('/login', async (req: AuthRequest, res: Response) => {
 // GET /api/auth/me
 router.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const result = await pool.query(
-      'SELECT id, email, name, api_key, tier, created_at FROM users WHERE id = $1',
-      [req.userId]
-    );
+    const [user] = await db
+      .select({
+        id: users.id, email: users.email, name: users.name,
+        api_key: users.apiKey, tier: users.tier, created_at: users.createdAt,
+      })
+      .from(users)
+      .where(eq(users.id, req.userId!));
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    return res.json({ user: result.rows[0] });
+    return res.json({ user });
   } catch (err: any) {
     console.error('Me error:', err);
     return res.status(500).json({ error: 'Internal server error' });
