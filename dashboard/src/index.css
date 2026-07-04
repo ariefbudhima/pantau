@@ -1,1 +1,54 @@
 @import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic theme tokens — swapped per theme, mapped into Tailwind below so we
+   can write bg-surface / text-muted etc. instead of dark: on every element. */
+:root {
+  --surface: #ffffff;   /* app background */
+  --panel:   #f6f7f9;   /* cards / rows */
+  --panel-2: #eceef1;   /* nested / hover */
+  --line:    #e2e4e8;   /* borders */
+  --text:    #1b1d22;   /* primary text */
+  --muted:   #6a707c;   /* secondary text */
+  --faint:   #9aa0ab;   /* tertiary */
+  --accent:  #2563eb;
+  --ok:      #15803d;
+  --warn:    #b45309;
+  --err:     #dc2626;
+}
+
+.dark {
+  --surface: #0c0e13;
+  --panel:   #12151c;
+  --panel-2: #1a1e27;
+  --line:    #222732;
+  --text:    #e4e7ec;
+  --muted:   #8b93a1;
+  --faint:   #5c6472;
+  --accent:  #3b82f6;
+  --ok:      #4ade80;
+  --warn:    #fbbf24;
+  --err:     #f87171;
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-panel:   var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line:    var(--line);
+  --color-text:    var(--text);
+  --color-muted:   var(--muted);
+  --color-faint:   var(--faint);
+  --color-accent:  var(--accent);
+  --color-ok:      var(--ok);
+  --color-warn:    var(--warn);
+  --color-err:     var(--err);
+}
+
+html, body, #root { height: 100%; }
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-feature-settings: "tnum" 1; /* tabular numbers for dense data */
+}

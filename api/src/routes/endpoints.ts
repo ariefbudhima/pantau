@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { pool } from '../db';
+import { pool, TIER_LIMITS, countUserEndpoints } from '../db';
 import { AuthRequest, authMiddleware } from '../middleware/auth';
 
 const router = Router();
@@ -32,6 +32,14 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 
     if (!projectSlug || !url) {
       return res.status(400).json({ error: 'projectSlug and url required' });
+    }
+
+    // Enforce tier endpoint quota (PRD §6)
+    const tierRow = await pool.query('SELECT tier FROM users WHERE id = $1', [req.userId]);
+    const tier = tierRow.rows[0]?.tier || 'free';
+    const limit = TIER_LIMITS[tier] ?? null;
+    if (limit !== null && (await countUserEndpoints(req.userId!)) >= limit) {
+      return res.status(403).json({ error: `Tier '${tier}' limit reached (${limit} endpoints). Upgrade to add more.` });
     }
 
     // Get or create project

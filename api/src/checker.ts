@@ -1,6 +1,8 @@
 /**
- * Heartbeat Checker — cron job that pings all registered endpoints.
- * Run: npx tsx src/checker.ts
+ * Heartbeat Checker — pings manual URL monitors on an interval.
+ * Auto-detected endpoints report themselves via the SDK (/api/ingest),
+ * so we only ping type='manual' rows here.
+ * Run: npx tsx src/checker.ts  (long-running; loops every CHECK_INTERVAL_MS)
  */
 import { pool } from './db';
 import https from 'https';
@@ -46,7 +48,8 @@ async function checkAll(): Promise<void> {
   const result = await pool.query(
     `SELECT e.id, e.method, e.path, e.type, e.url, e.status
      FROM endpoints e
-     JOIN projects p ON e.project_id = p.id`
+     JOIN projects p ON e.project_id = p.id
+     WHERE e.type = 'manual' AND e.url IS NOT NULL`
   );
 
   const endpoints: Endpoint[] = result.rows;
@@ -60,11 +63,7 @@ async function checkAll(): Promise<void> {
   let checked = 0;
 
   for (const ep of endpoints) {
-    const targetUrl = ep.type === 'manual' ? ep.url : `http://localhost${ep.path}`;
-
-    if (!targetUrl) continue;
-
-    const pingResult = await ping(targetUrl);
+    const pingResult = await ping(ep.url);
     const newStatus = pingResult.statusCode >= 200 && pingResult.statusCode < 400 ? 'up' : 'down';
 
     // Update endpoint
@@ -89,11 +88,15 @@ async function checkAll(): Promise<void> {
   console.log(`[checker] Done. Checked ${checked} endpoints.`);
 }
 
-checkAll()
-  .then(() => {
-    process.exit(0);
-  })
-  .catch((err) => {
-    console.error('[checker] Error:', err);
-    process.exit(1);
-  });
+const CHECK_INTERVAL_MS = parseInt(process.env.CHECK_INTERVAL_MS || '60000');
+
+async function loop(): Promise<void> {
+  try {
+    await checkAll();
+  } catch (err) {
+    console.error('[checker] Error:', err); // keep looping — one bad round shouldn't kill the checker
+  }
+  setTimeout(loop, CHECK_INTERVAL_MS);
+}
+
+loop();
