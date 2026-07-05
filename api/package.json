@@ -5,8 +5,11 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "checker": "tsx src/checker.ts",
+    "checker:once": "tsx src/checker.ts --once",
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:checker": "node dist/checker.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },
