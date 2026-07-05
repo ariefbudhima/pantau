@@ -25,6 +25,15 @@ export const TIER_LIMITS: Record<string, number | null> = {
   business: null,
 };
 
+// Log retention in days per tier. TimescaleDB retention is global (per-hypertable),
+// so the global policy uses the max. API queries enforce per-tier windows.
+export const TIER_RETENTION_DAYS: Record<string, number> = {
+  free: 3,
+  starter: 14,
+  pro: 30,
+  business: 90,
+};
+
 /** Current endpoint count owned by a user across all projects. */
 export async function countUserEndpoints(userId: number): Promise<number> {
   const [row] = await db
@@ -106,7 +115,9 @@ const ddl = `
   CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status_code, logged_at DESC);
 `;
 
-const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '7');
+// Global hypertable retention: max across all tiers (safety net).
+// Per-tier windows are enforced by API query filters.
+const LOG_RETENTION_DAYS = Math.max(...Object.values(TIER_RETENTION_DAYS));
 
 export async function initDB(): Promise<void> {
   await db.execute(sql.raw(ddl));

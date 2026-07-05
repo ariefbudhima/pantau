@@ -1,11 +1,26 @@
 import { Router, Response } from 'express';
 import { createHmac } from 'crypto';
 import { sql, and, eq, desc, gte, ilike, or, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, TIER_RETENTION_DAYS } from '../db';
 import { users, projects, endpoints, requestLogs as rl } from '../schema';
 import { AuthRequest, authMiddleware } from '../middleware/auth';
 
 const router = Router();
+
+// Simple in-memory TTL cache for user tier. Avoids querying DB every log request.
+// Replace with Redis when scaling beyond single process.
+const tierCache = new Map<number, { tier: string; exp: number }>();
+const TIER_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getUserTier(userId: number): Promise<string> {
+  const cached = tierCache.get(userId);
+  if (cached && cached.exp > Date.now()) return cached.tier;
+
+  const [u] = await db.select({ tier: users.tier }).from(users).where(eq(users.id, userId));
+  const tier = u?.tier || 'free';
+  tierCache.set(userId, { tier, exp: Date.now() + TIER_CACHE_TTL_MS });
+  return tier;
+}
 
 /** Same keyed hash the SDK uses, so a plaintext PII term can be matched to
  *  stored hashes. HMAC key = the user's api_key. */
@@ -29,7 +44,7 @@ router.get('/hash', authMiddleware, async (req: AuthRequest, res: Response) => {
 });
 
 /** Build the shared WHERE conditions from query filters (typed, composable). */
-function buildConds(req: AuthRequest): SQL[] {
+async function buildConds(req: AuthRequest): Promise<SQL[]> {
   const { endpointId, status, q, since, method, bodyq } = req.query as Record<string, string>;
   const conds: SQL[] = [eq(projects.userId, req.userId!)];
 
@@ -46,6 +61,12 @@ function buildConds(req: AuthRequest): SQL[] {
     );
   }
   if (since) conds.push(gte(rl.loggedAt, new Date(since)));
+  else {
+    // Tier-based retention: fetch from DB (source of truth), cached 5min.
+    const tier = await getUserTier(req.userId!);
+    const retentionDays = TIER_RETENTION_DAYS[tier] || 3;
+    conds.push(sql`${rl.loggedAt} >= NOW() - make_interval(days => ${retentionDays})`);
+  }
   if (status === '2xx') conds.push(sql`${rl.statusCode} >= 200 AND ${rl.statusCode} < 300`);
   else if (status === '4xx') conds.push(sql`${rl.statusCode} >= 400 AND ${rl.statusCode} < 500`);
   else if (status === '5xx') conds.push(sql`${rl.statusCode} >= 500`);
@@ -57,6 +78,7 @@ function buildConds(req: AuthRequest): SQL[] {
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const limit = Math.min(parseInt((req.query.limit as string) || '100'), 500);
+    const conds = await buildConds(req);
     const rows = await db
       .select({
         id: rl.id, method: rl.method, path: rl.path, status_code: rl.statusCode,
@@ -67,7 +89,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
       .from(rl)
       .innerJoin(projects, eq(rl.projectId, projects.id))
       .leftJoin(endpoints, eq(rl.endpointId, endpoints.id))
-      .where(and(...buildConds(req)))
+      .where(and(...conds))
       .orderBy(desc(rl.loggedAt))
       .limit(limit);
 
@@ -82,7 +104,8 @@ router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 router.get('/stats', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const buckets = Math.min(parseInt((req.query.buckets as string) || '40'), 200);
-    const where = and(...buildConds(req));
+    const conds = await buildConds(req);
+    const where = and(...conds);
 
     const [a] = await db
       .select({
