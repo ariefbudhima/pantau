@@ -1,5 +1,7 @@
 import { Router, Response } from 'express';
-import { pool, TIER_LIMITS, countUserEndpoints } from '../db';
+import { eq, and, desc, inArray } from 'drizzle-orm';
+import { db, TIER_LIMITS, countUserEndpoints } from '../db';
+import { users, projects, endpoints } from '../schema';
 import { AuthRequest, authMiddleware } from '../middleware/auth';
 
 const router = Router();
@@ -7,18 +9,20 @@ const router = Router();
 // GET /api/endpoints — list all endpoints for user
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const result = await pool.query(
-      `SELECT e.id, e.name, e.method, e.path, e.type, e.url,
-              e.status, e.last_checked_at, e.created_at,
-              p.name as project_name, p.slug as project_slug
-       FROM endpoints e
-       JOIN projects p ON e.project_id = p.id
-       WHERE p.user_id = $1
-       ORDER BY e.created_at DESC`,
-      [req.userId]
-    );
+    const rows = await db
+      .select({
+        id: endpoints.id, name: endpoints.name, method: endpoints.method,
+        path: endpoints.path, type: endpoints.type, url: endpoints.url,
+        status: endpoints.status, last_checked_at: endpoints.lastCheckedAt,
+        created_at: endpoints.createdAt,
+        project_name: projects.name, project_slug: projects.slug,
+      })
+      .from(endpoints)
+      .innerJoin(projects, eq(endpoints.projectId, projects.id))
+      .where(eq(projects.userId, req.userId!))
+      .orderBy(desc(endpoints.createdAt));
 
-    return res.json({ endpoints: result.rows });
+    return res.json({ endpoints: rows });
   } catch (err: any) {
     console.error('List endpoints error:', err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -35,39 +39,39 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
     }
 
     // Enforce tier endpoint quota (PRD §6)
-    const tierRow = await pool.query('SELECT tier FROM users WHERE id = $1', [req.userId]);
-    const tier = tierRow.rows[0]?.tier || 'free';
+    const [u] = await db.select({ tier: users.tier }).from(users).where(eq(users.id, req.userId!));
+    const tier = u?.tier || 'free';
     const limit = TIER_LIMITS[tier] ?? null;
     if (limit !== null && (await countUserEndpoints(req.userId!)) >= limit) {
       return res.status(403).json({ error: `Tier '${tier}' limit reached (${limit} endpoints). Upgrade to add more.` });
     }
 
     // Get or create project
-    let projectResult = await pool.query(
-      'SELECT id FROM projects WHERE user_id = $1 AND slug = $2',
-      [req.userId, projectSlug]
-    );
+    let [project] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.userId, req.userId!), eq(projects.slug, projectSlug)));
 
-    let projectId: number;
-    if (projectResult.rows.length === 0) {
-      const newProject = await pool.query(
-        `INSERT INTO projects (user_id, name, slug)
-         VALUES ($1, $2, $3) RETURNING id`,
-        [req.userId, projectSlug, projectSlug]
-      );
-      projectId = newProject.rows[0].id;
-    } else {
-      projectId = projectResult.rows[0].id;
+    if (!project) {
+      [project] = await db
+        .insert(projects)
+        .values({ userId: req.userId!, name: projectSlug, slug: projectSlug })
+        .returning({ id: projects.id });
     }
 
-    const epResult = await pool.query(
-      `INSERT INTO endpoints (project_id, name, method, path, type, url, status)
-       VALUES ($1, $2, $3, $4, 'manual', $5, 'unknown')
-       RETURNING id, name, method, path, type, url, status, created_at`,
-      [projectId, name || url, method || 'GET', url, url]
-    );
+    const [endpoint] = await db
+      .insert(endpoints)
+      .values({
+        projectId: project.id, name: name || url, method: method || 'GET',
+        path: url, type: 'manual', url, status: 'unknown',
+      })
+      .returning({
+        id: endpoints.id, name: endpoints.name, method: endpoints.method,
+        path: endpoints.path, type: endpoints.type, url: endpoints.url,
+        status: endpoints.status, created_at: endpoints.createdAt,
+      });
 
-    return res.status(201).json({ endpoint: epResult.rows[0] });
+    return res.status(201).json({ endpoint });
   } catch (err: any) {
     console.error('Add endpoint error:', err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -77,16 +81,18 @@ router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
 // DELETE /api/endpoints/:id
 router.delete('/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const result = await pool.query(
-      `DELETE FROM endpoints
-       WHERE id = $1 AND project_id IN (
-         SELECT id FROM projects WHERE user_id = $2
-       )
-       RETURNING id`,
-      [req.params.id, req.userId]
-    );
+    // Only delete endpoints under a project the user owns.
+    const owned = db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.userId, req.userId!));
 
-    if (result.rows.length === 0) {
+    const deleted = await db
+      .delete(endpoints)
+      .where(and(eq(endpoints.id, Number(req.params.id)), inArray(endpoints.projectId, owned)))
+      .returning({ id: endpoints.id });
+
+    if (deleted.length === 0) {
       return res.status(404).json({ error: 'Endpoint not found' });
     }
 

@@ -1,5 +1,7 @@
 import { Router, Response } from 'express';
-import { pool } from '../db';
+import { eq, and, desc } from 'drizzle-orm';
+import { db } from '../db';
+import { projects, endpoints, heartbeats } from '../schema';
 import { AuthRequest, authMiddleware } from '../middleware/auth';
 
 const router = Router();
@@ -7,43 +9,39 @@ const router = Router();
 // GET /api/heartbeats/:endpointId — get recent heartbeats
 router.get('/:endpointId', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { endpointId } = req.params;
+    const endpointId = Number(req.params.endpointId);
 
     // Verify ownership
-    const epCheck = await pool.query(
-      `SELECT e.id FROM endpoints e
-       JOIN projects p ON e.project_id = p.id
-       WHERE e.id = $1 AND p.user_id = $2`,
-      [endpointId, req.userId]
-    );
+    const [owned] = await db
+      .select({ id: endpoints.id })
+      .from(endpoints)
+      .innerJoin(projects, eq(endpoints.projectId, projects.id))
+      .where(and(eq(endpoints.id, endpointId), eq(projects.userId, req.userId!)));
 
-    if (epCheck.rows.length === 0) {
+    if (!owned) {
       return res.status(404).json({ error: 'Endpoint not found' });
     }
 
-    const result = await pool.query(
-      `SELECT id, status_code, response_time_ms, status, error_message, checked_at
-       FROM heartbeats
-       WHERE endpoint_id = $1
-       ORDER BY checked_at DESC
-       LIMIT 100`,
-      [endpointId]
-    );
+    const rows = await db
+      .select({
+        id: heartbeats.id, status_code: heartbeats.statusCode,
+        response_time_ms: heartbeats.responseTimeMs, status: heartbeats.status,
+        error_message: heartbeats.errorMessage, checked_at: heartbeats.checkedAt,
+      })
+      .from(heartbeats)
+      .where(eq(heartbeats.endpointId, endpointId))
+      .orderBy(desc(heartbeats.checkedAt))
+      .limit(100);
 
     // Compute uptime
-    const total = result.rows.length;
-    const up = result.rows.filter((h: any) => h.status === 'up').length;
+    const total = rows.length;
+    const up = rows.filter((h) => h.status === 'up').length;
     const uptimePct = total > 0 ? ((up / total) * 100).toFixed(2) : '0';
 
     return res.json({
       endpointId,
-      heartbeats: result.rows,
-      stats: {
-        total,
-        up,
-        down: total - up,
-        uptime_pct: parseFloat(uptimePct),
-      },
+      heartbeats: rows,
+      stats: { total, up, down: total - up, uptime_pct: parseFloat(uptimePct) },
     });
   } catch (err: any) {
     console.error('Heartbeats error:', err);

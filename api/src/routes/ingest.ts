@@ -1,5 +1,7 @@
 import { Router, Response } from 'express';
-import { pool, TIER_LIMITS, countUserEndpoints } from '../db';
+import { eq, and, sql } from 'drizzle-orm';
+import { db, TIER_LIMITS, countUserEndpoints } from '../db';
+import { users, projects, endpoints, requestLogs } from '../schema';
 
 const router = Router();
 
@@ -13,16 +15,14 @@ router.post('/', async (req, res: Response) => {
     }
 
     // Find user by API key
-    const userResult = await pool.query(
-      'SELECT id FROM users WHERE api_key = $1',
-      [apiKey]
-    );
+    const [foundUser] = await db.select({ id: users.id, tier: users.tier })
+      .from(users).where(eq(users.apiKey, apiKey));
 
-    if (userResult.rows.length === 0) {
+    if (!foundUser) {
       return res.status(401).json({ error: 'Invalid API key' });
     }
 
-    const userId = userResult.rows[0].id;
+    const userId = foundUser.id;
     const { service, events } = req.body;
 
     if (!service || !Array.isArray(events)) {
@@ -32,19 +32,16 @@ router.post('/', async (req, res: Response) => {
 
     // Upsert project
     const slug = service.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    const projectResult = await pool.query(
-      `INSERT INTO projects (user_id, name, slug)
-       VALUES ($1, $2, $3)
-       ON CONFLICT(user_id, slug) DO UPDATE SET name = $2
-       RETURNING id`,
-      [userId, service, slug]
-    );
-    const projectId = projectResult.rows[0].id;
+    const [project] = await db
+      .insert(projects)
+      .values({ userId, name: service, slug })
+      .onConflictDoUpdate({ target: [projects.userId, projects.slug], set: { name: service } })
+      .returning({ id: projects.id });
+    const projectId = project.id;
 
     // Tier quota (PRD §6): existing endpoints accept logs freely, but a new
     // (method, path) past the limit is dropped.
-    const tierRow = await pool.query('SELECT tier FROM users WHERE id = $1', [userId]);
-    const tier = tierRow.rows[0]?.tier || 'free';
+    const tier = foundUser.tier || 'free';
     const limit = TIER_LIMITS[tier] ?? null;
     let currentCount = await countUserEndpoints(userId);
 
@@ -67,48 +64,52 @@ router.post('/', async (req, res: Response) => {
       const ts = last.timestamp || new Date().toISOString();
 
       if (limit !== null && currentCount >= limit) {
-        const existing = await pool.query(
-          'SELECT id FROM endpoints WHERE project_id = $1 AND method = $2 AND path = $3',
-          [projectId, method, path]
-        );
-        if (existing.rows.length === 0) { skipped++; continue; }
-        endpointIds.set(`${method}:${path}`, existing.rows[0].id);
-        await pool.query(`UPDATE endpoints SET status = $1, last_checked_at = $2 WHERE id = $3`,
-          [status, ts, existing.rows[0].id]);
+        const [existing] = await db
+          .select({ id: endpoints.id })
+          .from(endpoints)
+          .where(and(
+            eq(endpoints.projectId, projectId),
+            eq(endpoints.method, method),
+            eq(endpoints.path, path),
+          ));
+        if (!existing) { skipped++; continue; }
+        endpointIds.set(`${method}:${path}`, existing.id);
+        await db.update(endpoints)
+          .set({ status, lastCheckedAt: new Date(ts) })
+          .where(eq(endpoints.id, existing.id));
         continue;
       }
 
-      const epResult = await pool.query(
-        `INSERT INTO endpoints (project_id, name, method, path, type, status, last_checked_at)
-         VALUES ($1, $2, $3, $4, 'auto', $5, $6)
-         ON CONFLICT (project_id, method, path)
-         DO UPDATE SET name = $2, status = $5, last_checked_at = $6
-         RETURNING id, (xmax = 0) AS inserted`,
-        [projectId, name, method, path, status, ts]
-      );
-      if (epResult.rows[0].inserted) currentCount++;
-      endpointIds.set(`${method}:${path}`, epResult.rows[0].id);
+      // Upsert + detect insert-vs-update via xmax (pg internal, not exposed by
+      // the ORM) so we can keep the tier counter accurate.
+      const { rows: [ep] } = await db.execute<{ id: number; inserted: boolean }>(sql`
+        INSERT INTO endpoints (project_id, name, method, path, type, status, last_checked_at)
+        VALUES (${projectId}, ${name}, ${method}, ${path}, 'auto', ${status}, ${ts})
+        ON CONFLICT (project_id, method, path)
+        DO UPDATE SET name = ${name}, status = ${status}, last_checked_at = ${ts}
+        RETURNING id, (xmax = 0) AS inserted
+      `);
+      if (ep.inserted) currentCount++;
+      endpointIds.set(`${method}:${path}`, ep.id);
     }
 
     // Bulk-insert every request event into the log store.
-    let stored = 0;
+    const logRows = [];
     for (const ev of events) {
       const endpointId = endpointIds.get(`${ev.method}:${ev.path}`);
       if (!endpointId) continue; // endpoint was quota-skipped
-      await pool.query(
-        `INSERT INTO request_logs
-           (endpoint_id, project_id, method, path, status_code, response_time_ms,
-            error_message, request_body, response_body, headers, logged_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [endpointId, projectId, ev.method, ev.path, ev.statusCode,
-         ev.responseTimeMs || 0, ev.errorMessage || null,
-         ev.requestBody != null ? JSON.stringify(ev.requestBody) : null,
-         ev.responseBody != null ? JSON.stringify(ev.responseBody) : null,
-         ev.headers != null ? JSON.stringify(ev.headers) : null,
-         ev.timestamp || new Date().toISOString()]
-      );
-      stored++;
+      logRows.push({
+        endpointId, projectId, method: ev.method, path: ev.path,
+        statusCode: ev.statusCode, responseTimeMs: ev.responseTimeMs || 0,
+        errorMessage: ev.errorMessage || null,
+        requestBody: ev.requestBody ?? null,
+        responseBody: ev.responseBody ?? null,
+        headers: ev.headers ?? null,
+        loggedAt: new Date(ev.timestamp || Date.now()),
+      });
     }
+    if (logRows.length > 0) await db.insert(requestLogs).values(logRows);
+    const stored = logRows.length;
 
     return res.json({ ok: true, stored, skipped });
   } catch (err: any) {
