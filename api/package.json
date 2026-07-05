@@ -5,8 +5,13 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "checker": "tsx src/checker.ts",
+    "checker:once": "tsx src/checker.ts --once",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "start:checker": "node dist/checker.js",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
   },
   "keywords": [],
   "author": "Arief",
@@ -15,6 +20,7 @@
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.22.0"
@@ -26,6 +32,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.0.1",
     "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
   }

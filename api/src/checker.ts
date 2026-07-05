@@ -1,19 +1,23 @@
 /**
- * Heartbeat Checker — cron job that pings all registered endpoints.
- * Run: npx tsx src/checker.ts
+ * Heartbeat Checker — long-running monitor loop.
+ *
+ * - Manual endpoints (type='manual'): pinged directly at their URL.
+ * - Auto endpoints (type='auto'): report themselves via the SDK
+ *   (/api/ingest); here we only mark them down when heartbeats stop
+ *   arriving (lastCheckedAt older than STALE_THRESHOLD_MS). Recovery
+ *   happens automatically when heartbeats resume.
+ *
+ * Run continuously: npx tsx src/checker.ts
+ * Run one cycle:    npx tsx src/checker.ts --once
  */
-import { pool } from './db';
+import { and, eq, isNotNull, lt } from 'drizzle-orm';
+import { db, pool } from './db';
+import { endpoints, heartbeats } from './schema';
 import https from 'https';
 import http from 'http';
 
-interface Endpoint {
-  id: number;
-  method: string;
-  path: string;
-  type: string;
-  url: string;
-  status: string;
-}
+const CHECK_INTERVAL_MS = parseInt(process.env.CHECK_INTERVAL_MS || '30000');
+const STALE_THRESHOLD_MS = parseInt(process.env.STALE_THRESHOLD_MS || '90000');
 
 function ping(url: string): Promise<{ statusCode: number; responseTimeMs: number; error?: string }> {
   return new Promise((resolve) => {
@@ -34,66 +38,103 @@ function ping(url: string): Promise<{ statusCode: number; responseTimeMs: number
       resolve({ statusCode: 0, responseTimeMs: Date.now() - start, error: 'timeout' });
     });
 
-    req.on('error', (err) => {
-      resolve({ statusCode: 0, responseTimeMs: Date.now() - start, error: err.message });
+    req.on('error', (err: NodeJS.ErrnoException & { errors?: Error[] }) => {
+      // AggregateError (e.g. ECONNREFUSED on both IPv6 and IPv4) has an
+      // empty .message — the real reasons live in .errors
+      const message =
+        err.message || err.errors?.map((e) => e.message).join('; ') || err.code || 'connection error';
+      resolve({ statusCode: 0, responseTimeMs: Date.now() - start, error: message });
     });
   });
 }
 
-async function checkAll(): Promise<void> {
-  console.log(`[checker] Starting heartbeat check at ${new Date().toISOString()}`);
+type ManualEndpoint = { id: number; method: string; path: string; url: string | null; status: string | null };
 
-  const result = await pool.query(
-    `SELECT e.id, e.method, e.path, e.type, e.url, e.status
-     FROM endpoints e
-     JOIN projects p ON e.project_id = p.id`
-  );
+async function checkManualEndpoint(ep: ManualEndpoint, now: Date): Promise<void> {
+  const pingResult = await ping(ep.url!);
+  const newStatus = pingResult.statusCode >= 200 && pingResult.statusCode < 400 ? 'up' : 'down';
 
-  const endpoints: Endpoint[] = result.rows;
+  await db.update(endpoints)
+    .set({ status: newStatus, lastCheckedAt: now })
+    .where(eq(endpoints.id, ep.id));
 
-  if (endpoints.length === 0) {
-    console.log('[checker] No endpoints to check');
-    return;
+  await db.insert(heartbeats).values({
+    endpointId: ep.id, statusCode: pingResult.statusCode,
+    responseTimeMs: pingResult.responseTimeMs, status: newStatus,
+    errorMessage: pingResult.error || null, checkedAt: now,
+  });
+
+  if (newStatus !== ep.status) {
+    console.log(`[checker] ${ep.method} ${ep.url} — ${ep.status} → ${newStatus} (${pingResult.responseTimeMs}ms)`);
   }
-
-  const now = new Date().toISOString();
-  let checked = 0;
-
-  for (const ep of endpoints) {
-    const targetUrl = ep.type === 'manual' ? ep.url : `http://localhost${ep.path}`;
-
-    if (!targetUrl) continue;
-
-    const pingResult = await ping(targetUrl);
-    const newStatus = pingResult.statusCode >= 200 && pingResult.statusCode < 400 ? 'up' : 'down';
-
-    // Update endpoint
-    await pool.query(
-      `UPDATE endpoints SET status = $1, last_checked_at = $2 WHERE id = $3`,
-      [newStatus, now, ep.id]
-    );
-
-    // Record heartbeat
-    await pool.query(
-      `INSERT INTO heartbeats (endpoint_id, status_code, response_time_ms, status, error_message, checked_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [ep.id, pingResult.statusCode, pingResult.responseTimeMs, newStatus, pingResult.error || null, now]
-    );
-
-    checked++;
-    if (newStatus !== ep.status) {
-      console.log(`[checker] ${ep.method} ${ep.path} — ${ep.status} → ${newStatus} (${pingResult.responseTimeMs}ms)`);
-    }
-  }
-
-  console.log(`[checker] Done. Checked ${checked} endpoints.`);
 }
 
-checkAll()
-  .then(() => {
-    process.exit(0);
-  })
-  .catch((err) => {
-    console.error('[checker] Error:', err);
-    process.exit(1);
-  });
+async function checkManualEndpoints(now: Date): Promise<number> {
+  const rows = await db
+    .select({
+      id: endpoints.id, method: endpoints.method, path: endpoints.path,
+      url: endpoints.url, status: endpoints.status,
+    })
+    .from(endpoints)
+    .where(and(eq(endpoints.type, 'manual'), isNotNull(endpoints.url)));
+
+  await Promise.allSettled(rows.map((ep) => checkManualEndpoint(ep, now)));
+  return rows.length;
+}
+
+async function markStaleAutoEndpoints(now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - STALE_THRESHOLD_MS);
+
+  const stale = await db.update(endpoints)
+    .set({ status: 'down' })
+    .where(and(
+      eq(endpoints.type, 'auto'),
+      eq(endpoints.status, 'up'),
+      lt(endpoints.lastCheckedAt, cutoff),
+    ))
+    .returning({
+      id: endpoints.id, method: endpoints.method,
+      path: endpoints.path, lastCheckedAt: endpoints.lastCheckedAt,
+    });
+
+  for (const ep of stale) {
+    await db.insert(heartbeats).values({
+      endpointId: ep.id, statusCode: 0, responseTimeMs: 0, status: 'down',
+      errorMessage: `no heartbeat received for ${Math.round(STALE_THRESHOLD_MS / 1000)}s`,
+      checkedAt: now,
+    });
+    console.log(`[checker] ${ep.method} ${ep.path} — up → down (heartbeat stale since ${ep.lastCheckedAt?.toISOString()})`);
+  }
+
+  return stale.length;
+}
+
+async function runCycle(): Promise<void> {
+  const now = new Date();
+  const [manualCount, staleCount] = await Promise.all([
+    checkManualEndpoints(now),
+    markStaleAutoEndpoints(now),
+  ]);
+  console.log(`[checker] Cycle done — ${manualCount} manual pinged, ${staleCount} auto marked down`);
+}
+
+async function loop(): Promise<void> {
+  try {
+    await runCycle();
+  } catch (err) {
+    console.error('[checker] Error:', err); // keep looping — one bad round shouldn't kill the checker
+  }
+  setTimeout(loop, CHECK_INTERVAL_MS);
+}
+
+if (process.argv.includes('--once')) {
+  runCycle()
+    .then(() => pool.end())
+    .catch((err) => {
+      console.error('[checker] Error:', err);
+      process.exit(1);
+    });
+} else {
+  console.log(`[checker] Started — interval ${CHECK_INTERVAL_MS}ms, stale threshold ${STALE_THRESHOLD_MS}ms`);
+  loop();
+}

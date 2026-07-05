@@ -1,5 +1,7 @@
 import { Router, Response } from 'express';
-import { pool } from '../db';
+import { eq, and, sql } from 'drizzle-orm';
+import { db, TIER_LIMITS, countUserEndpoints } from '../db';
+import { users, projects, endpoints, requestLogs } from '../schema';
 
 const router = Router();
 
@@ -13,68 +15,103 @@ router.post('/', async (req, res: Response) => {
     }
 
     // Find user by API key
-    const userResult = await pool.query(
-      'SELECT id FROM users WHERE api_key = $1',
-      [apiKey]
-    );
+    const [foundUser] = await db.select({ id: users.id, tier: users.tier })
+      .from(users).where(eq(users.apiKey, apiKey));
 
-    if (userResult.rows.length === 0) {
+    if (!foundUser) {
       return res.status(401).json({ error: 'Invalid API key' });
     }
 
-    const userId = userResult.rows[0].id;
-    const { service, endpoints } = req.body;
+    const userId = foundUser.id;
+    const { service, events } = req.body;
 
-    if (!service || !endpoints || !Array.isArray(endpoints)) {
-      return res.status(400).json({ error: 'service name and endpoints array required' });
+    if (!service || !Array.isArray(events)) {
+      return res.status(400).json({ error: 'service name and events array required' });
     }
+    if (events.length === 0) return res.json({ ok: true, stored: 0, skipped: 0 });
 
     // Upsert project
     const slug = service.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    const projectResult = await pool.query(
-      `INSERT INTO projects (user_id, name, slug)
-       VALUES ($1, $2, $3)
-       ON CONFLICT(user_id, slug) DO UPDATE SET name = $2
-       RETURNING id`,
-      [userId, service, slug]
-    );
-    const projectId = projectResult.rows[0].id;
+    const [project] = await db
+      .insert(projects)
+      .values({ userId, name: service, slug })
+      .onConflictDoUpdate({ target: [projects.userId, projects.slug], set: { name: service } })
+      .returning({ id: projects.id });
+    const projectId = project.id;
 
-    // Upsert endpoints with proper ON CONFLICT
-    const now = new Date().toISOString();
-    const upserted: any[] = [];
+    // Tier quota (PRD §6): existing endpoints accept logs freely, but a new
+    // (method, path) past the limit is dropped.
+    const tier = foundUser.tier || 'free';
+    const limit = TIER_LIMITS[tier] ?? null;
+    let currentCount = await countUserEndpoints(userId);
 
-    for (const ep of endpoints) {
-      const { method, path, statusCode, responseTimeMs, errorMessage } = ep;
-
-      if (!method || !path) continue;
-
-      const newStatus = (statusCode >= 200 && statusCode < 400) ? 'up' : 'down';
-      const name = `${method} ${path}`;
-
-      // Single upsert — INSERT or UPDATE on conflict
-      const epResult = await pool.query(
-        `INSERT INTO endpoints (project_id, name, method, path, type, status, last_checked_at)
-         VALUES ($1, $2, $3, $4, 'auto', $5, $6)
-         ON CONFLICT (project_id, method, path)
-         DO UPDATE SET name = $2, status = $5, last_checked_at = $6
-         RETURNING id`,
-        [projectId, name, method, path, newStatus, now]
-      );
-
-      const endpointId = epResult.rows[0].id;
-
-      // Record heartbeat
-      await pool.query(
-        `INSERT INTO heartbeats (endpoint_id, status_code, response_time_ms, status, error_message, checked_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [endpointId, statusCode, responseTimeMs || 0, newStatus, errorMessage || null, now]
-      );
-
-      upserted.push({ method, path, status: newStatus });
+    // Reduce the raw event stream to one rollup per (method, path): latest
+    // status + a representative timestamp. Keeps the up/down endpoint list live.
+    const byEndpoint = new Map<string, { method: string; path: string; last: any }>();
+    for (const ev of events) {
+      if (!ev?.method || !ev?.path) continue;
+      const key = `${ev.method}:${ev.path}`;
+      byEndpoint.set(key, { method: ev.method, path: ev.path, last: ev });
     }
 
-    return res.json({ ok: true, endpoints: upserted });
+    // endpoint_id per key, so each log row links to its endpoint.
+    const endpointIds = new Map<string, number>();
+    let skipped = 0;
+
+    for (const { method, path, last } of byEndpoint.values()) {
+      const status = last.statusCode >= 200 && last.statusCode < 400 ? 'up' : 'down';
+      const name = `${method} ${path}`;
+      const ts = last.timestamp || new Date().toISOString();
+
+      if (limit !== null && currentCount >= limit) {
+        const [existing] = await db
+          .select({ id: endpoints.id })
+          .from(endpoints)
+          .where(and(
+            eq(endpoints.projectId, projectId),
+            eq(endpoints.method, method),
+            eq(endpoints.path, path),
+          ));
+        if (!existing) { skipped++; continue; }
+        endpointIds.set(`${method}:${path}`, existing.id);
+        await db.update(endpoints)
+          .set({ status, lastCheckedAt: new Date(ts) })
+          .where(eq(endpoints.id, existing.id));
+        continue;
+      }
+
+      // Upsert + detect insert-vs-update via xmax (pg internal, not exposed by
+      // the ORM) so we can keep the tier counter accurate.
+      const { rows: [ep] } = await db.execute<{ id: number; inserted: boolean }>(sql`
+        INSERT INTO endpoints (project_id, name, method, path, type, status, last_checked_at)
+        VALUES (${projectId}, ${name}, ${method}, ${path}, 'auto', ${status}, ${ts})
+        ON CONFLICT (project_id, method, path)
+        DO UPDATE SET name = ${name}, status = ${status}, last_checked_at = ${ts}
+        RETURNING id, (xmax = 0) AS inserted
+      `);
+      if (ep.inserted) currentCount++;
+      endpointIds.set(`${method}:${path}`, ep.id);
+    }
+
+    // Bulk-insert every request event into the log store.
+    const logRows = [];
+    for (const ev of events) {
+      const endpointId = endpointIds.get(`${ev.method}:${ev.path}`);
+      if (!endpointId) continue; // endpoint was quota-skipped
+      logRows.push({
+        endpointId, projectId, method: ev.method, path: ev.path,
+        statusCode: ev.statusCode, responseTimeMs: ev.responseTimeMs || 0,
+        errorMessage: ev.errorMessage || null,
+        requestBody: ev.requestBody ?? null,
+        responseBody: ev.responseBody ?? null,
+        headers: ev.headers ?? null,
+        loggedAt: new Date(ev.timestamp || Date.now()),
+      });
+    }
+    if (logRows.length > 0) await db.insert(requestLogs).values(logRows);
+    const stored = logRows.length;
+
+    return res.json({ ok: true, stored, skipped });
   } catch (err: any) {
     console.error('Ingest error:', err);
     return res.status(500).json({ error: 'Internal server error' });

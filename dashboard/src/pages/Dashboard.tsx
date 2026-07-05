@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import LogViewer from './LogViewer';
+import { useTheme } from '../useTheme';
 
 interface Endpoint {
   id: number;
@@ -19,9 +21,11 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [newUrl, setNewUrl] = useState('');
   const [newSlug, setNewSlug] = useState('default');
+  const [theme, toggleTheme] = useTheme();
   const navigate = useNavigate();
 
   const user = JSON.parse(localStorage.getItem('pantau_user') || '{}');
@@ -46,17 +50,13 @@ export default function Dashboard() {
     try {
       const res = await api.get('/auth/me');
       setApiKey(res.data.user.api_key);
-    } catch (err) {}
+    } catch { /* ignore */ }
   };
 
   const handleAddEndpoint = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await api.post('/endpoints', {
-        projectSlug: newSlug,
-        url: newUrl,
-        method: 'GET',
-      });
+      await api.post('/endpoints', { projectSlug: newSlug, url: newUrl, method: 'GET' });
       setAddOpen(false);
       setNewUrl('');
       loadEndpoints();
@@ -70,7 +70,7 @@ export default function Dashboard() {
     try {
       await api.delete(`/endpoints/${id}`);
       loadEndpoints();
-    } catch (err) {}
+    } catch { /* ignore */ }
   };
 
   const handleLogout = () => {
@@ -83,174 +83,152 @@ export default function Dashboard() {
   const downCount = endpoints.filter((e) => e.status === 'down').length;
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      {/* Header */}
-      <header className="border-b border-gray-800 bg-gray-900">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold">Pantau</h1>
-            <p className="text-gray-500 text-sm">{user.email}</p>
+    <div className="min-h-screen bg-surface text-text">
+      {/* Header — thin bar */}
+      <header className="border-b border-line sticky top-0 bg-surface/90 backdrop-blur z-20">
+        <div className="max-w-7xl mx-auto px-5 h-12 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold tracking-tight">pantau</span>
+            <span className="text-faint text-xs">·</span>
+            <span className="text-muted text-xs">{user.email}</span>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="text-xs bg-gray-800 px-3 py-1 rounded-full text-gray-400">
-              {user.tier === 'free' ? 'Free (3 endpoints)' : user.tier}
+          <div className="flex items-center gap-3 text-xs">
+            <span className="flex items-center gap-1.5 text-muted">
+              <span className="w-1.5 h-1.5 rounded-full bg-ok" />{upCount} up
+              <span className="w-1.5 h-1.5 rounded-full bg-err ml-2" />{downCount} down
             </span>
-            <button onClick={handleLogout} className="text-gray-400 hover:text-white text-sm">
-              Logout
+            <button onClick={toggleTheme} className="text-muted hover:text-text w-6 text-center" title="Toggle theme">
+              {theme === 'dark' ? '☀' : '☾'}
             </button>
+            <button onClick={handleLogout} className="text-muted hover:text-text">Logout</button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-8">
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-4 mb-8">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <p className="text-gray-500 text-sm">Endpoints</p>
-            <p className="text-2xl font-bold">{endpoints.length}</p>
-          </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <p className="text-gray-500 text-sm">Up</p>
-            <p className="text-2xl font-bold text-green-500">{upCount}</p>
-          </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <p className="text-gray-500 text-sm">Down</p>
-            <p className="text-2xl font-bold text-red-500">{downCount}</p>
-          </div>
-        </div>
-
-        {/* API Key */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold">Your API Key</h2>
-            <button
-              onClick={() => setShowKey(!showKey)}
-              className="text-xs text-blue-400 hover:underline"
-            >
-              {showKey ? 'Hide' : 'Show'}
-            </button>
-          </div>
-          <code className="text-sm break-all text-gray-300 bg-gray-800 px-3 py-2 rounded block">
-            {showKey ? apiKey : apiKey.slice(0, 12) + '...'}
-          </code>
-          <p className="text-xs text-gray-500 mt-2">
-            Use this in <code className="text-blue-400">pantau.init({'{'}apiKey: '...'{'}'})</code>
-          </p>
-        </div>
-
-        {/* SDK Setup */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
-          <h2 className="font-semibold mb-2">Quick Setup</h2>
-          <pre className="bg-gray-800 text-sm rounded-lg p-4 overflow-x-auto text-gray-300">
-{`import pantau from 'pantau-js';
-
-pantau.init({
-  apiKey: '${apiKey.slice(0, 12)}...',
-  serviceName: 'my-api',
-});
-
-app.use(pantau.middleware());
-pantau.startHeartbeat();`}
-          </pre>
-        </div>
-
-        {/* Endpoints */}
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Endpoints</h2>
-          <button
-            onClick={() => setAddOpen(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg"
-          >
-            + Add URL
-          </button>
-        </div>
-
-        {/* Add Modal */}
-        {addOpen && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-            <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md">
-              <h3 className="text-lg font-semibold mb-4">Add Manual Monitor</h3>
-              <form onSubmit={handleAddEndpoint} className="space-y-4">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">Project Slug</label>
-                  <input
-                    type="text"
-                    value={newSlug}
-                    onChange={(e) => setNewSlug(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">URL</label>
-                  <input
-                    type="url"
-                    value={newUrl}
-                    onChange={(e) => setNewUrl(e.target.value)}
-                    placeholder="https://example.com"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white"
-                    required
-                  />
-                </div>
-                <div className="flex gap-2 justify-end">
-                  <button type="button" onClick={() => setAddOpen(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white">
-                    Cancel
-                  </button>
-                  <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg">
-                    Add
-                  </button>
-                </div>
-              </form>
+      <main className="max-w-7xl mx-auto px-5 py-5 space-y-5">
+        {/* Endpoints — dense list */}
+        <section className="border border-line rounded-lg bg-panel">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-line">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Endpoints</h2>
+              <span className="text-xs text-faint tabular-nums">{endpoints.length}</span>
+              <span className="text-xs text-faint">
+                · {user.tier === 'free' ? 'Free (3 max)' : user.tier}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSetupOpen((s) => !s)}
+                className="text-xs text-muted hover:text-text border border-line rounded px-2 py-1"
+              >
+                Setup & API key
+              </button>
+              <button
+                onClick={() => setAddOpen(true)}
+                className="text-xs text-accent hover:underline"
+              >
+                + Add URL
+              </button>
             </div>
           </div>
-        )}
 
-        {loading ? (
-          <p className="text-gray-500">Loading...</p>
-        ) : endpoints.length === 0 ? (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
-            <p className="text-gray-400 mb-2">No endpoints yet</p>
-            <p className="text-gray-600 text-sm">
-              Install the SDK or add a manual URL monitor above
+          {/* Setup drawer */}
+          {setupOpen && (
+            <div className="px-3 py-3 border-b border-line bg-surface space-y-3">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-faint uppercase tracking-wide w-16">API key</span>
+                <code className="font-mono text-text bg-panel border border-line rounded px-2 py-1 flex-1 break-all">
+                  {showKey ? apiKey : apiKey.slice(0, 12) + '…'}
+                </code>
+                <button onClick={() => setShowKey(!showKey)} className="text-accent">
+                  {showKey ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <pre className="bg-panel border border-line rounded p-3 text-[11px] overflow-x-auto text-muted font-mono">
+{`import pantau from 'pantau-js';
+pantau.init({ apiKey: '${apiKey.slice(0, 12)}…', serviceName: 'my-api', capture: { body: true } });
+app.use(pantau.middleware());
+pantau.startHeartbeat();`}
+              </pre>
+            </div>
+          )}
+
+          {loading ? (
+            <p className="text-muted text-sm px-3 py-6">Loading…</p>
+          ) : endpoints.length === 0 ? (
+            <p className="text-faint text-sm px-3 py-8 text-center">
+              No endpoints yet. Install the SDK or add a manual URL monitor.
             </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {endpoints.map((ep) => (
-              <div
-                key={ep.id}
-                className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 flex items-center justify-between"
-              >
-                <div className="flex items-center gap-4">
+          ) : (
+            <div className="divide-y divide-line max-h-72 overflow-y-auto">
+              {endpoints.map((ep) => (
+                <div key={ep.id} className="flex items-center gap-3 px-3 py-1.5 text-sm hover:bg-panel-2 group">
                   <span
-                    className={`w-2 h-2 rounded-full ${
-                      ep.status === 'up' ? 'bg-green-500' :
-                      ep.status === 'down' ? 'bg-red-500' : 'bg-gray-600'
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      ep.status === 'up' ? 'bg-ok' : ep.status === 'down' ? 'bg-err' : 'bg-faint'
                     }`}
                   />
-                  <span className="text-xs font-mono bg-gray-800 px-2 py-0.5 rounded text-gray-400">
-                    {ep.method}
+                  <span className="font-mono text-[11px] text-muted w-12 shrink-0">{ep.method}</span>
+                  <span className="font-mono text-text truncate flex-1" title={ep.path || ep.url}>
+                    {ep.path || ep.url}
                   </span>
-                  <span className="text-sm">{ep.path || ep.url}</span>
                   {ep.type === 'manual' && (
-                    <span className="text-xs bg-gray-800 px-2 py-0.5 rounded text-gray-500">URL</span>
+                    <span className="text-[10px] text-faint border border-line rounded px-1">URL</span>
                   )}
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs ${ep.status === 'up' ? 'text-green-400' : ep.status === 'down' ? 'text-red-400' : 'text-gray-500'}`}>
-                    {ep.status.toUpperCase()}
+                  <span className={`text-[11px] tabular-nums w-10 text-right ${
+                    ep.status === 'up' ? 'text-ok' : ep.status === 'down' ? 'text-err' : 'text-faint'
+                  }`}>
+                    {ep.status}
                   </span>
                   <button
                     onClick={() => handleDelete(ep.id)}
-                    className="text-gray-600 hover:text-red-400 text-sm"
+                    className="text-faint hover:text-err opacity-0 group-hover:opacity-100 w-4"
                   >
                     ✕
                   </button>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Logs + charts */}
+        <LogViewer />
       </main>
+
+      {/* Add modal */}
+      {addOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setAddOpen(false)}>
+          <div className="bg-panel border border-line rounded-lg p-5 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-3">Add manual monitor</h3>
+            <form onSubmit={handleAddEndpoint} className="space-y-3">
+              <div>
+                <label className="block text-xs text-muted mb-1">Project slug</label>
+                <input
+                  type="text" value={newSlug} onChange={(e) => setNewSlug(e.target.value)}
+                  className="w-full bg-surface border border-line rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-muted mb-1">URL</label>
+                <input
+                  type="url" value={newUrl} onChange={(e) => setNewUrl(e.target.value)}
+                  placeholder="https://example.com" required
+                  className="w-full bg-surface border border-line rounded px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex gap-2 justify-end pt-1">
+                <button type="button" onClick={() => setAddOpen(false)} className="px-3 py-1.5 text-sm text-muted hover:text-text">
+                  Cancel
+                </button>
+                <button type="submit" className="bg-accent text-white text-sm px-3 py-1.5 rounded">
+                  Add
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
