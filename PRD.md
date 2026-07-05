@@ -1,7 +1,7 @@
 # Pantau — Product Requirements Document
 
-> **Version:** 1.1 — July 1, 2026
-> **Status:** Draft
+> **Version:** 1.2 — July 5, 2026
+> **Status:** In Progress
 > **Author:** Arief (fluffy 👑)
 
 ---
@@ -129,12 +129,12 @@ Positioning: **"The monitoring tool built for how Indonesian teams actually work
 
 ### Indonesian Market
 
-| Tier | Endpoints | Price/Month | Key Features |
-|------|-----------|-------------|--------------|
-| **Gratis** | 3 | Rp 0 | Auto-detect, manual URL, basic dashboard |
-| **Starter** | 20 | Rp 75.000 | WA alerts, email, 7-day history |
-| **Pro** | 100 | Rp 199.000 | MCP access, analytics, 30-day history |
-| **Business** | Unlimited | Rp 499.000 | Team, status pages, priority support |
+| Tier | Endpoints | Price/Month | Retention | Key Features |
+|------|-----------|-------------|-----------|--------------|
+| **Gratis** | 3 | Rp 0 | 3 hari | Auto-detect, manual URL, basic dashboard |
+| **Starter** | 20 | Rp 75.000 | 14 hari | WA alerts, email, request logging |
+| **Pro** | 100 | Rp 199.000 | 30 hari | MCP access, analytics, PII redaction |
+| **Business** | Unlimited | Rp 499.000 | 90 hari | Team, status pages, priority support |
 
 ### Global (future)
 
@@ -181,12 +181,29 @@ to PaymentGateway. Want me to check gateway health or add retry?"
 
 **Backend:** Node.js + Express → Go (later)
 **Database:** PostgreSQL (metadata) + TimescaleDB (metrics)
-**Cache:** Redis
+**Cache:** Redis (planned) — current: in-memory TTL cache for tier lookups
 **Queue:** BullMQ
 **Frontend:** React + Vite + TailwindCSS
 **SDKs:** OpenTelemetry-based auto-instrumentation
 **MCP Server:** stdio transport, 4 tools exposed
 **Infra:** Single VPS MVP → scale horizontally
+
+### Tier-Based Retention (v0.1)
+
+Request logs stored in TimescaleDB hypertable (`request_logs`). Global retention policy: 90 days (max tier).
+Per-tier query windows enforced at API level:
+
+| Tier | Retention | Query Window |
+|------|-----------|-------------|
+| Free | 3 days | `logged_at >= NOW() - 3 days` |
+| Starter | 14 days | `logged_at >= NOW() - 14 days` |
+| Pro | 30 days | `logged_at >= NOW() - 30 days` |
+| Business | 90 days | `logged_at >= NOW() - 90 days` |
+
+- **Source of truth:** PostgreSQL `users.tier` column (NOT JWT claims)
+- **Cache:** In-memory Map with 5-minute TTL (→ Redis later)
+- **Override:** `?since=` query parameter bypasses tier window
+- **Global safety net:** TimescaleDB drops chunks >90 days regardless of tier
 
 ### MCP Tools Exposed
 

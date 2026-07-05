@@ -36,7 +36,11 @@ const dashboardPath = path.join(__dirname, '../../dashboard/dist');
 const indexHtml = path.join(dashboardPath, 'index.html');
 if (fs.existsSync(indexHtml)) {
   app.use(express.static(dashboardPath));
-  app.use((_req, res) => {
+  // SPA fallback: only serve index.html for non-API paths
+  app.use((req, res) => {
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'Not found' });
+    }
     res.sendFile(indexHtml);
   });
 }
