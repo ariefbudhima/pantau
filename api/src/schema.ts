@@ -9,6 +9,7 @@ export const users = pgTable('users', {
   name: varchar('name', { length: 255 }),
   tier: varchar('tier', { length: 20 }).default('free'),
   apiKey: varchar('api_key', { length: 64 }).notNull().unique(),
+  whatsappNumber: varchar('whatsapp_number', { length: 20 }),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 }, (t) => [index('idx_users_api_key').on(t.apiKey)]);

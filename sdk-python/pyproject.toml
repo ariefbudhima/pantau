@@ -1,0 +1,38 @@
+[project]
+name = "pantau-py"
+version = "0.1.0"
+description = "Pantau monitoring SDK for Python — auto-detect routes, heartbeat reporting"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Arief", email = "arief@pantau.dev"}
+]
+keywords = ["monitoring", "uptime", "heartbeat", "pantau", "fastapi", "flask", "mcp", "ai-native", "observability"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.urls]
+Homepage = "https://pantau.dev"
+Repository = "https://github.com/ariefbudhima/pantau"
+Issues = "https://github.com/ariefbudhima/pantau/issues"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pantau*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

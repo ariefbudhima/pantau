@@ -56,6 +56,7 @@ const ddl = `
     name VARCHAR(255),
     tier VARCHAR(20) DEFAULT 'free',
     api_key VARCHAR(64) UNIQUE NOT NULL,
+    whatsapp_number VARCHAR(20),
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
   );

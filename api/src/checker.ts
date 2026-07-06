@@ -13,6 +13,7 @@
 import { and, eq, isNotNull, lt } from 'drizzle-orm';
 import { db, pool } from './db';
 import { endpoints, heartbeats } from './schema';
+import { sendAlert } from './alert';
 import https from 'https';
 import http from 'http';
 
@@ -66,6 +67,12 @@ async function checkManualEndpoint(ep: ManualEndpoint, now: Date): Promise<void>
 
   if (newStatus !== ep.status) {
     console.log(`[checker] ${ep.method} ${ep.url} — ${ep.status} → ${newStatus} (${pingResult.responseTimeMs}ms)`);
+    sendAlert({
+      endpointId: ep.id,
+      endpointName: ep.path, method: ep.method, path: ep.path, url: ep.url,
+      oldStatus: ep.status, newStatus, responseTimeMs: pingResult.responseTimeMs,
+      errorMessage: pingResult.error || null, timestamp: now,
+    });
   }
 }
 
@@ -104,6 +111,13 @@ async function markStaleAutoEndpoints(now: Date): Promise<number> {
       checkedAt: now,
     });
     console.log(`[checker] ${ep.method} ${ep.path} — up → down (heartbeat stale since ${ep.lastCheckedAt?.toISOString()})`);
+    sendAlert({
+      endpointId: ep.id,
+      endpointName: ep.path, method: ep.method, path: ep.path,
+      oldStatus: 'up', newStatus: 'down',
+      errorMessage: `No heartbeat for ${Math.round(STALE_THRESHOLD_MS / 1000)}s`,
+      timestamp: now,
+    });
   }
 
   return stale.length;
