@@ -281,7 +281,7 @@ export default function LogViewer() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search path or email…"
               title="Type a path (/login) to search routes, or an email to find hashed PII. Raw PII is never stored."
-              className={`bg-panel border rounded-md pl-3 pr-12 py-1.5 text-sm text-text w-56 focus:outline-none focus:border-accent ${
+              className={`bg-panel border rounded-md pl-3 pr-12 py-1.5 text-sm text-text w-full sm:w-56 focus:outline-none focus:border-accent ${
                 searchMode === 'pii' ? 'border-accent/50' : 'border-line'
               }`}
             />
@@ -314,8 +314,8 @@ export default function LogViewer() {
       ) : (
         // Fixed-height container: header sticky, body scrolls (ELK Discover style).
         <div className="border border-line rounded-lg overflow-hidden bg-panel">
-          <div className="max-h-[34rem] overflow-y-auto">
-            <table className="w-full text-sm border-collapse">
+          <div className="max-h-[34rem] overflow-y-auto overflow-x-auto">
+            <table className="w-full min-w-[40rem] text-sm border-collapse">
               <thead className="sticky top-0 bg-panel z-10">
                 <tr className="text-faint text-[11px] border-b border-line">
                   <Th onClick={() => toggleSort('logged_at')} label={`Time${sortArrow('logged_at')}`} />

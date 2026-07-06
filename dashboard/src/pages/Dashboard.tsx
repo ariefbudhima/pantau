@@ -87,15 +87,15 @@ export default function Dashboard() {
       {/* Header — thin bar */}
       <header className="border-b border-line sticky top-0 bg-surface/90 backdrop-blur z-20">
         <div className="max-w-7xl mx-auto px-5 h-12 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <span className="font-semibold tracking-tight">pantau</span>
-            <span className="text-faint text-xs">·</span>
-            <span className="text-muted text-xs">{user.email}</span>
+            <span className="text-faint text-xs hidden sm:inline">·</span>
+            <span className="text-muted text-xs hidden sm:inline truncate">{user.email}</span>
           </div>
-          <div className="flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-3 text-xs shrink-0">
             <span className="flex items-center gap-1.5 text-muted">
-              <span className="w-1.5 h-1.5 rounded-full bg-ok" />{upCount} up
-              <span className="w-1.5 h-1.5 rounded-full bg-err ml-2" />{downCount} down
+              <span className="w-2 h-2 rounded-full bg-ok" />{upCount}
+              <span className="w-2 h-2 rounded-full bg-err ml-2.5" />{downCount}
             </span>
             <button onClick={toggleTheme} className="text-muted hover:text-text w-6 text-center" title="Toggle theme">
               {theme === 'dark' ? '☀' : '☾'}

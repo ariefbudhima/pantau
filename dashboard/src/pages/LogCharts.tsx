@@ -51,7 +51,7 @@ export default function LogCharts({ stats }: { stats: LogStats | null }) {
 
   return (
     <div className="border border-line rounded-lg bg-panel mb-3">
-      <div className="grid grid-cols-4 divide-x divide-line border-b border-line">
+      <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-line border-b border-line">
         <Metric label="Events" value={stats.total.toLocaleString()} sub={span ? `over ${span}` : ''} />
         <Metric label="Error rate" value={`${stats.errorRate}%`} sub={`${stats.errors} errors`} tone={stats.errorRate > 5 ? 'err' : undefined} />
         <Metric label="Avg latency" value={`${stats.avgMs}ms`} />
